@@ -1,4 +1,4 @@
-.PHONY: up down logs open app dev stop-app traffic traces
+.PHONY: up down logs open app dev stop-app traffic traces loki push-log
 
 up:
 	docker compose up -d
@@ -30,3 +30,12 @@ traces:
 		--data-urlencode 'q={ resource.service.name = "hello-elysia" }' \
 		--data-urlencode 'limit=5' \
 	| python3 -c "import json,sys; [print(t['traceID'], t['rootServiceName'], t['rootTraceName']) for t in json.load(sys.stdin)['traces']]"
+
+loki:
+	@curl -s -G http://localhost:3000/api/datasources/proxy/uid/loki/loki/api/v1/query_range \
+		--data-urlencode 'query={service_name="hello-elysia"}' \
+		--data-urlencode 'limit=5' \
+	| python3 -c "import json,sys; [print(ts, line) for r in json.load(sys.stdin)['data']['result'] for ts, line in r['values']]"
+
+push-log:
+	@MESSAGE="$(MSG)" LEVEL="$(LEVEL)" JOB="$(JOB)" ./push-test-log.sh

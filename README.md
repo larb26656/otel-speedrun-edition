@@ -8,6 +8,52 @@ Stack: `grafana/otel-lgtm` (Grafana + Tempo + Loki + Mimir + OTel Collector ใ�
 
 ---
 
+## คำสั่งที่เตรียมไว้ (Makefile)
+
+| คำสั่ง | ทำอะไร |
+|---|---|
+| `make up` / `make down` | เปิด/ปิด LGTM stack |
+| `make logs` | ดู container logs |
+| `make open` | เปิด Grafana |
+| `make app` / `make dev` | รัน hello-api (ปกติ/watch mode) |
+| `make traffic` | ยิง request เข้า hello-api ให้เกิด telemetry |
+| `make traces` | query trace ล่าสุดจาก Tempo |
+| `make loki` | query log ล่าสุดจาก Loki |
+| `make push-log` | ยิง test log เข้า Loki โดยตรง |
+
+### ยิง test log เข้า Loki
+
+```bash
+# ใช้ค่า default (job=curl-direct, level=info)
+make push-log
+
+# override ข้อความ / level / job
+make push-log MSG="custom message"
+make push-log MSG="oops" LEVEL="error" JOB="my-app"
+
+# เรียก script ตรง ๆ (ใช้ env แทน)
+MESSAGE="test error" LEVEL="error" ./push-test-log.sh
+LOKI_URL="http://other-host:3100" ./push-test-log.sh
+```
+
+query ใน Grafana ด้วย LogQL: `{job="curl-direct"}`
+
+> **ของจริงควรยิงทางไหน?** `push-test-log.sh` ใช้ **Loki push API ตรง ๆ** (format `streams`/`values` — ไม่ใช่ OTel) เหมาะกับการ smoke test ว่า Loki รับของได้ ส่วน app จริงควรยิง **OTLP** เข้า `:4318` ให้ collector แปลงให้ — ได้ vendor-neutral + trace correlation + batching/retry ฟรี
+
+### References
+
+**ทางตรง (Loki push API — ที่ script นี้ใช้):**
+- [Loki HTTP API — Ingest logs](https://grafana.com/docs/loki/latest/reference/api/#ingest-logs) — spec ของ `POST /loki/api/v1/push` + JSON format `streams`/`values`
+- [Loki HTTP API — Timestamps](https://grafana.com/docs/loki/latest/reference/api/#timestamps) — ทำไม timestamp ต้องส่งเป็น string (ส่งเป็น number จะโดน 400)
+
+**ทาง OTel (สิ่งที่ app จริงควรใช้):**
+- [OTLP Specification](https://opentelemetry.io/docs/specs/otlp/) — protocol spec: OTLP/HTTP port 4318, path `/v1/logs`, JSON encoding (`resourceLogs` → `scopeLogs` → `logRecords`)
+- [OTLP JSON request examples](https://github.com/open-telemetry/opentelemetry-proto/tree/main/examples/) — ตัวอย่าง payload จริงของแต่ละ signal
+- [Ingest logs to Loki with OTel Collector](https://grafana.com/docs/loki/latest/send-data/otel/) — Loki รับ OTLP ตรงที่ `/otlp/v1/logs` + กฎการ map attribute (เช่น `service.name` → label `service_name` ใน Loki ซึ่งเห็นใน `make loki`)
+- [OpenTelemetry JavaScript](https://opentelemetry.io/docs/languages/js/) — SDK/instrumentation สำหรับ JS (hello-api ใช้ทางนี้)
+
+---
+
 ## Stage 0 — เห็นของจริงก่อน (30 นาที)
 
 - `docker compose up -d`
