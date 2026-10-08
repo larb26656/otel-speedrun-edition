@@ -17,8 +17,13 @@ Stack: `grafana/otel-lgtm` (Grafana + Tempo + Loki + Mimir + OTel Collector ใ�
 | `make open` | เปิด Grafana |
 | `make app` / `make dev` | รัน hello-api (ปกติ/watch mode) |
 | `make traffic` | ยิง request เข้า hello-api ให้เกิด telemetry |
+| `make slow` / `make slow MS=800` | route ช้า (span `simulate-db-query`) |
+| `make error` | route พัง 500 เสมอ (span `load-user-profile`) |
+| `make chaos` / `make chaos P=50 MAXMS=1000` | สุ่ม fail หรือหน่วงเวลา (span `charge-payment`) |
+| `make chaos-traffic` / `make chaos-traffic N=50` | ยิง burst เข้า /chaos สร้าง error rate/slow spike ให้ dashboard/alert |
 | `make traces` | query trace ล่าสุดจาก Tempo |
 | `make loki` | query log ล่าสุดจาก Loki |
+| `make metrics` | query request rate ต่อ route จาก Mimir |
 | `make push-log` | ยิง test log เข้า Loki โดยตรง |
 
 ### ยิง test log เข้า Loki
@@ -37,6 +42,33 @@ LOKI_URL="http://other-host:3100" ./push-test-log.sh
 ```
 
 query ใน Grafana ด้วย LogQL: `{job="curl-direct"}`
+
+### Metrics ที่ hello-api ส่ง (OTLP → collector → Mimir)
+
+| Metric (ชื่อใน PromQL) | ได้มาจาก | ใช้ทำอะไร |
+|---|---|---|
+| `http_server_request_duration_seconds_*` (histogram) | auto จาก `@elysia/opentelemetry` | Duration / Rate (มี `_count`) แยกตาม `http_route`, `http_request_method`, `http_response_status_code` |
+| `http_server_request_total` (counter) | manual ใน `plugins/http-log.ts` | นับ request รวม |
+| `http_server_request_errors_total` (counter) | manual ใน `plugins/http-log.ts` | นับ 5xx |
+
+> เคล็ดลับ: histogram ของ plugin จะส่งออกจริงก็ต่อเมื่อมี `metricReader` ใน `telemetry.ts` (ไม่งั้น meter เป็น no-op) — และ unit `s` จะกลายเป็น suffix `_seconds` ตอนแปลงเป็นชื่อ Prometheus
+
+ตัวอย่าง RED dashboard ด้วย PromQL:
+
+```promql
+# Rate — request ต่อวินาที แยกตาม route
+sum by (http_route) (rate(http_server_request_duration_seconds_count[1m]))
+
+# Error — 5xx ต่อวินาที
+sum by (http_route) (rate(http_server_request_errors_total[1m]))
+
+# Duration — p99 per route
+histogram_quantile(0.99, sum by (http_route, le) (rate(http_server_request_duration_seconds_bucket[5m])))
+```
+
+> Mimir scrape ทุก ~60s — ยิง traffic แล้วรอสัก 1–2 นาทีค่อย query
+
+
 
 > **ของจริงควรยิงทางไหน?** `push-test-log.sh` ใช้ **Loki push API ตรง ๆ** (format `streams`/`values` — ไม่ใช่ OTel) เหมาะกับการ smoke test ว่า Loki รับของได้ ส่วน app จริงควรยิง **OTLP** เข้า `:4318` ให้ collector แปลงให้ — ได้ vendor-neutral + trace correlation + batching/retry ฟรี
 
@@ -74,8 +106,15 @@ query ใน Grafana ด้วย LogQL: `{job="curl-direct"}`
 
 ## Stage 2 — สร้างปัญหา แล้วตามรอย (1 ชม.) — core skill
 
-- แอบใส่ `sleep(200ms)` หรือ random error ใน 1 function
-- ใช้ TraceQL หา slow/error trace เช่น `{ duration > 200ms }`
+Route จำลองปัญหาพร้อมใช้แล้ว (span คนร้ายอยู่ใน waterfall):
+
+| Route | พฤติกรรม | คนร้าย |
+|---|---|---|
+| `GET /slow?ms=800` | หน่วง `ms` millisec (default 300, สูงสุด 10000) | span `simulate-db-query` |
+| `GET /error` | โยน exception → 500 | span `load-user-profile` (มี exception event) |
+| `GET /chaos?p=30&maxMs=800` | สุ่ม fail `p%` ไม่งั้นหน่วง 0–`maxMs` | span `charge-payment` |
+
+- ใช้ TraceQL หา slow/error trace เช่น `{ duration > 300ms }`, `{ status = error }`, `{ name = "simulate-db-query" && duration > 500ms }`
 - ชี้ span คนร้ายจาก waterfall
 - แก้แล้ว verify ว่า trace กลับมาปกติ
 
