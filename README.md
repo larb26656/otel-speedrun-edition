@@ -26,6 +26,10 @@ docker compose up --build -d
 - promtail ใช้ docker_sd กรองเฉพาะ container ที่ติด label `otel.logs.scrape=true` (ไม่เก็บ log ทั้งเครื่อง)
 - prod stack มี overlay เดียวกัน: `make prod-apps-stdout` (push mode คือ `make prod-apps`)
 
+## แบบ k8s (apps + Alloy บน minikube, LGTM คง docker)
+
+apps กับ Alloy deploy บน minikube แต่ backend (Loki/Tempo/Prometheus/Grafana/collector) ยังเป็น docker เดิม — Alloy เป็น in-cluster agent รับ OTLP + scrape pod stdout แล้ว forward ออกไปที่ docker host ดูวิธีใช้ที่ [k8s/README.md](k8s/README.md)
+
 - Grafana UI: http://localhost:3000
 - OTLP gRPC: `localhost:4317`
 - OTLP HTTP: `http://localhost:4318`

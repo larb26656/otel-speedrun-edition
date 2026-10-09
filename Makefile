@@ -1,6 +1,6 @@
 .PHONY: up down logs open app dev stop-app traffic slow error chaos chaos-traffic traces loki metrics push-log \
 	order-build order-app stop-order order-traffic order-greet order-slow checkout checkout-traffic order-traces trace \
-	prod prod-apps prod-down prod-logs up-stdout prod-apps-stdout
+	prod prod-apps prod-down prod-logs up-stdout prod-apps-stdout k8s-build k8s-up k8s-down k8s-apps
 
 up:
 	docker compose up -d
@@ -120,3 +120,21 @@ up-stdout:
 
 prod-apps-stdout:
 	cd docker-prod && docker compose -f compose.yml -f compose.stdout.yml --profile apps up -d --build
+
+# ---------- k8s (apps + Alloy on minikube, LGTM backends stay on Docker) ----------
+
+k8s-build:
+	docker build -t lgtm/hello-api:local hello-api
+	docker build -t lgtm/order-api:local order-api
+	minikube image load lgtm/hello-api:local lgtm/order-api:local
+
+k8s-up:
+	kubectl apply -f k8s/namespace.yml
+	kubectl apply -f k8s/
+
+k8s-down:
+	kubectl delete -f k8s/ --ignore-not-found
+
+k8s-apps:
+	kubectl -n observability port-forward svc/hello-api $(if $(HELLO_API_PORT),$(HELLO_API_PORT),3001):3001 &
+	kubectl -n observability port-forward svc/order-api $(if $(ORDER_API_PORT),$(ORDER_API_PORT),3002):3002

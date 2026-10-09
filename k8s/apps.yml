@@ -1,0 +1,93 @@
+# Same images as the Docker setups — mode is decided purely by env.
+# Default here is stdout log mode: OTLP log export is off and Alloy scrapes
+# pod stdout. To flip to push mode, remove the two kill-switch env vars
+# (Alloy already routes OTLP logs to Loki).
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: hello-api
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: hello-api }
+  template:
+    metadata:
+      labels:
+        app: hello-api
+        otel.logs.scrape: "true"
+        otel.service.name: hello-elysia
+    spec:
+      containers:
+        - name: hello-api
+          image: lgtm/hello-api:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: OTEL_EXPORTER_OTLP_ENDPOINT
+              value: http://alloy:4318
+            - name: OTEL_LOGS_EXPORTER
+              value: none
+          ports:
+            - containerPort: 3001
+          resources:
+            requests: { cpu: 50m, memory: 128Mi }
+            limits: { memory: 512Mi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: hello-api
+  namespace: observability
+spec:
+  selector: { app: hello-api }
+  ports:
+    - name: http
+      port: 3001
+      targetPort: 3001
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: order-api
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: order-api }
+  template:
+    metadata:
+      labels:
+        app: order-api
+        otel.logs.scrape: "true"
+        otel.service.name: order-api
+    spec:
+      containers:
+        - name: order-api
+          image: lgtm/order-api:local
+          imagePullPolicy: IfNotPresent
+          env:
+            - name: HELLO_API_BASE_URL
+              value: http://hello-api:3001
+            - name: MANAGEMENT_OTLP_TRACING_ENDPOINT
+              value: http://alloy:4318/v1/traces
+            - name: MANAGEMENT_OTLP_METRICS_EXPORT_URL
+              value: http://alloy:4318/v1/metrics
+            - name: MANAGEMENT_OTLP_LOGGING_EXPORT_ENABLED
+              value: "false"
+          ports:
+            - containerPort: 3002
+          resources:
+            requests: { cpu: 100m, memory: 512Mi }
+            limits: { memory: 1Gi }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: order-api
+  namespace: observability
+spec:
+  selector: { app: order-api }
+  ports:
+    - name: http
+      port: 3002
+      targetPort: 3002

@@ -1,0 +1,235 @@
+# Alloy is the in-cluster agent. The LGTM backends stay on the Docker host
+# (unchanged compose stacks); Alloy reaches them via host.minikube.internal:
+# - OTLP (traces/metrics, and logs if the apps' OTLP log export is enabled)
+#   is forwarded to the Docker collector's OTLP endpoint
+# - pod stdout logs are pushed straight to the Docker Loki
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: alloy
+  namespace: observability
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: alloy-observability
+rules:
+  - apiGroups: [""]
+    resources: [pods, nodes]
+    verbs: [get, list, watch]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: alloy-observability
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: alloy-observability
+subjects:
+  - kind: ServiceAccount
+    name: alloy
+    namespace: observability
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: alloy-config
+  namespace: observability
+data:
+  config.alloy: |
+    logging {
+      level = "info"
+    }
+
+    // ---------- OTLP pipeline (apps push here, forwarded to Docker host) ----------
+    otelcol.receiver.otlp "default" {
+      http {
+        endpoint = "0.0.0.0:4318"
+      }
+      grpc {
+        endpoint = "0.0.0.0:4317"
+      }
+
+      output {
+        metrics = [otelcol.processor.batch.default.input]
+        logs    = [otelcol.processor.batch.default.input]
+        traces  = [otelcol.processor.batch.default.input]
+      }
+    }
+
+    otelcol.processor.batch "default" {
+      timeout = "1s"
+
+      output {
+        metrics = [otelcol.exporter.otlp.docker_host.input]
+        logs    = [otelcol.exporter.otlp.docker_host.input]
+        traces  = [otelcol.exporter.otlp.docker_host.input]
+      }
+    }
+
+    otelcol.exporter.otlp "docker_host" {
+      client {
+        endpoint = "host.minikube.internal:4317"
+        tls {
+          insecure = true
+        }
+      }
+    }
+
+    // ---------- Pod stdout log scraping ----------
+    discovery.kubernetes "pods" {
+      role = "pod"
+    }
+
+    discovery.relabel "pod_logs" {
+      targets = discovery.kubernetes.pods.targets
+
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        regex         = "observability"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_otel_logs_scrape"]
+        regex         = "true"
+        action        = "keep"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_otel_service_name"]
+        target_label  = "service_name"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_label_otel_service_name"]
+        target_label  = "job"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_namespace"]
+        target_label  = "namespace"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_name"]
+        target_label  = "pod"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_container_name"]
+        target_label  = "container"
+      }
+      rule {
+        source_labels = ["__meta_kubernetes_pod_uid", "__meta_kubernetes_pod_container_name"]
+        separator     = "/"
+        target_label  = "__path__"
+        replacement   = "/var/log/pods/*$1/*.log"
+      }
+    }
+
+    local.file_match "pod_logs" {
+      path_targets = discovery.relabel.pod_logs.output
+    }
+
+    loki.source.file "pod_logs" {
+      targets    = local.file_match.pod_logs.targets
+      forward_to = [loki.process.pod_logs.receiver]
+    }
+
+    loki.process "pod_logs" {
+      // Kubelet wraps each line as {"log":"...","stream":...} — unwrap first.
+      stage.docker {}
+
+      // hello-api (pino) logs are JSON with numeric levels; map to a text
+      // label. order-api logs are plain text with the level already in the
+      // line, so they skip this and Loki's detected_level takes over.
+      stage.match {
+        selector = "{job=\"hello-elysia\"}"
+        stage.json {
+          expressions = {
+            level = "level",
+          }
+        }
+        stage.template {
+          source = "level"
+          template = "{{ if eq .Value \"60\" }}FATAL{{ else if eq .Value \"50\" }}ERROR{{ else if eq .Value \"40\" }}WARN{{ else if eq .Value \"30\" }}INFO{{ else if eq .Value \"20\" }}DEBUG{{ else }}TRACE{{ end }}"
+        }
+        stage.labels {
+          values = {
+            level = "",
+          }
+        }
+      }
+
+      forward_to = [loki.write.default.receiver]
+    }
+
+    loki.write "default" {
+      endpoint {
+        url = "http://host.minikube.internal:3100/loki/api/v1/push"
+      }
+    }
+---
+# Single replica for the local demo. For a real cluster run Alloy as a
+# DaemonSet (one per node) for log collection, plus a separate gateway.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: alloy
+  namespace: observability
+spec:
+  replicas: 1
+  selector:
+    matchLabels: { app: alloy }
+  template:
+    metadata:
+      labels: { app: alloy }
+    spec:
+      serviceAccountName: alloy
+      containers:
+        - name: alloy
+          image: grafana/alloy:v1.20.1
+          args:
+            - run
+            - --server.http.listen-addr=0.0.0.0:12345
+            - /etc/alloy/config.alloy
+          ports:
+            - containerPort: 12345
+            - containerPort: 4317
+            - containerPort: 4318
+          volumeMounts:
+            - name: config
+              mountPath: /etc/alloy
+            - name: varlogpods
+              mountPath: /var/log/pods
+              readOnly: true
+            - name: varlibdockercontainers
+              mountPath: /var/lib/docker/containers
+              readOnly: true
+          resources:
+            requests: { cpu: 100m, memory: 256Mi }
+            limits: { memory: 1Gi }
+          readinessProbe:
+            httpGet: { path: /-/ready, port: 12345 }
+            initialDelaySeconds: 5
+      volumes:
+        - name: config
+          configMap: { name: alloy-config }
+        - name: varlogpods
+          hostPath: { path: /var/log/pods }
+        - name: varlibdockercontainers
+          hostPath: { path: /var/lib/docker/containers }
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: alloy
+  namespace: observability
+spec:
+  selector: { app: alloy }
+  ports:
+    - name: otlp-grpc
+      port: 4317
+      targetPort: 4317
+    - name: otlp-http
+      port: 4318
+      targetPort: 4318
+    - name: http
+      port: 12345
+      targetPort: 12345
