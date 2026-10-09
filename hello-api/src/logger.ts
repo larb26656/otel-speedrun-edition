@@ -1,9 +1,19 @@
 import { Writable } from 'node:stream'
 import pino from 'pino'
+import { context, trace } from '@opentelemetry/api'
 import { logs, SeverityNumber } from '@opentelemetry/api-logs'
 import type { LogAttributes, LogRecord } from '@opentelemetry/api-logs'
 
 const otelLogger = logs.getLogger('hello-elysia')
+
+// Stamps every pino record (both stdout and the OTel stream below) with the
+// active trace/span, so stdout-scraped logs stay trace-correlatable when the
+// OTLP log exporter is disabled (OTEL_LOGS_EXPORTER=none).
+const traceMixin = () => {
+	const spanContext = trace.getSpanContext(context.active())
+	if (!spanContext) return {}
+	return { trace_id: spanContext.traceId, span_id: spanContext.spanId }
+}
 
 const SEVERITY = {
 	10: { text: 'TRACE', number: SeverityNumber.TRACE },
@@ -68,7 +78,8 @@ export const logger = pino(
 	{
 		name: 'hello-elysia',
 		level: process.env.LOG_LEVEL ?? 'info',
-		base: undefined
+		base: undefined,
+		mixin: traceMixin
 	},
 	pino.multistream([{ stream: process.stdout }, { stream: otelStream }])
 )

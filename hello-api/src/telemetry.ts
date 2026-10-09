@@ -6,25 +6,33 @@ import { OTLPLogExporter } from '@opentelemetry/exporter-logs-otlp-proto'
 import { PeriodicExportingMetricReader } from '@opentelemetry/sdk-metrics'
 import { OTLPMetricExporter } from '@opentelemetry/exporter-metrics-otlp-proto'
 
+const otlpEndpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT ?? 'http://localhost:4318'
+
+const logsExportDisabled = process.env.OTEL_LOGS_EXPORTER === 'none'
+
 export const telemetry = opentelemetry({
 	serviceName: 'hello-elysia',
 	spanProcessors: [
 		new BatchSpanProcessor(
 			new OTLPTraceExporter({
-				url: 'http://localhost:4318/v1/traces'
+				url: `${otlpEndpoint}/v1/traces`
 			})
 		)
 	],
-	logRecordProcessors: [
-		new BatchLogRecordProcessor(
-			new OTLPLogExporter({
-				url: 'http://localhost:4318/v1/logs'
-			})
-		)
-	],
+	...(logsExportDisabled
+		? {}
+		: {
+				logRecordProcessors: [
+					new BatchLogRecordProcessor(
+						new OTLPLogExporter({
+							url: `${otlpEndpoint}/v1/logs`
+						})
+					)
+				]
+			}),
 	metricReader: new PeriodicExportingMetricReader({
 		exporter: new OTLPMetricExporter({
-			url: 'http://localhost:4318/v1/metrics'
+				url: `${otlpEndpoint}/v1/metrics`
 		}),
 		exportIntervalMillis: 5000
 	}),

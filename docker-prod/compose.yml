@@ -1,0 +1,99 @@
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.111.0
+    command: ["--config=/etc/otelcol-contrib/config.yml"]
+    volumes:
+      - ./otel-collector.yml:/etc/otelcol-contrib/config.yml:ro
+    ports:
+      - "${OTEL_BIND:-127.0.0.1}:4317:4317"
+      - "${OTEL_BIND:-127.0.0.1}:4318:4318"
+    depends_on:
+      - loki
+      - tempo
+      - prometheus
+    restart: unless-stopped
+    networks: [observability]
+
+  grafana:
+    image: grafana/grafana:11.4.0
+    environment:
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USER:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?Set GRAFANA_ADMIN_PASSWORD in .env}
+      GF_USERS_ALLOW_SIGN_UP: "false"
+    ports:
+      - "${GRAFANA_BIND:-127.0.0.1}:3000:3000"
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    depends_on: [loki, tempo, prometheus]
+    restart: unless-stopped
+    networks: [observability]
+
+  prometheus:
+    image: prom/prometheus:v2.55.1
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --storage.tsdb.retention.time=${PROMETHEUS_RETENTION:-15d}
+      - --web.enable-lifecycle
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    expose: [9090]
+    restart: unless-stopped
+    networks: [observability]
+
+  loki:
+    image: grafana/loki:3.3.2
+    command: ["-config.file=/etc/loki/config.yml"]
+    volumes:
+      - ./loki.yml:/etc/loki/config.yml:ro
+      - loki-data:/loki
+    expose: [3100]
+    restart: unless-stopped
+    networks: [observability]
+
+  tempo:
+    image: grafana/tempo:2.6.1
+    command: ["-config.file=/etc/tempo/config.yml"]
+    volumes:
+      - ./tempo.yml:/etc/tempo/config.yml:ro
+      - tempo-data:/var/tempo
+    expose: [3200]
+    restart: unless-stopped
+    networks: [observability]
+
+  hello-api:
+    build: ../hello-api
+    profiles: [apps]
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://otel-collector:4318
+    ports:
+      - "${APPS_BIND:-127.0.0.1}:${HELLO_API_PORT:-3001}:3001"
+    depends_on: [otel-collector]
+    restart: unless-stopped
+    networks: [observability]
+
+  order-api:
+    build: ../order-api
+    profiles: [apps]
+    environment:
+      HELLO_API_BASE_URL: http://hello-api:3001
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://otel-collector:4318/v1/traces
+      MANAGEMENT_OTLP_METRICS_EXPORT_URL: http://otel-collector:4318/v1/metrics
+      MANAGEMENT_OTLP_LOGGING_ENDPOINT: http://otel-collector:4318/v1/logs
+    ports:
+      - "${APPS_BIND:-127.0.0.1}:${ORDER_API_PORT:-3002}:3002"
+    depends_on: [otel-collector, hello-api]
+    restart: unless-stopped
+    networks: [observability]
+
+volumes:
+  grafana-data:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+
+networks:
+  observability:
+    name: lgtm-observability

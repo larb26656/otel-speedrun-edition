@@ -6,3 +6,27 @@ services:
       - "4318:4318"
       - "3000:3000"
       - "3100:3100"
+
+  hello-api:
+    build:
+      context: ./hello-api
+    ports:
+      - "${HELLO_API_PORT:-3001}:3001"
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: http://lgtm:4318
+    depends_on:
+      - lgtm
+
+  order-api:
+    build:
+      context: ./order-api
+    ports:
+      - "${ORDER_API_PORT:-3002}:3002"
+    environment:
+      HELLO_API_BASE_URL: http://hello-api:3001
+      MANAGEMENT_OTLP_TRACING_ENDPOINT: http://lgtm:4318/v1/traces
+      MANAGEMENT_OTLP_METRICS_EXPORT_URL: http://lgtm:4318/v1/metrics
+      MANAGEMENT_OTLP_LOGGING_ENDPOINT: http://lgtm:4318/v1/logs
+    depends_on:
+      - lgtm
+      - hello-api

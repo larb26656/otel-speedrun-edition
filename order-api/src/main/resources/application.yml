@@ -6,7 +6,7 @@ spring:
     name: order-api
 
 hello-api:
-  base-url: http://localhost:3001
+  base-url: ${HELLO_API_BASE_URL:http://localhost:3001}
 
 management:
   endpoints:
@@ -18,16 +18,15 @@ management:
       probability: 1.0
   otlp:
     tracing:
-      endpoint: http://localhost:4318/v1/traces
+      endpoint: ${MANAGEMENT_OTLP_TRACING_ENDPOINT:http://localhost:4318/v1/traces}
       transport: http
     metrics:
       export:
-        url: http://localhost:4318/v1/metrics
+        url: ${MANAGEMENT_OTLP_METRICS_EXPORT_URL:http://localhost:4318/v1/metrics}
         step: 5s
         aggregation-temporality: cumulative
     logging:
-      export:
-        endpoint: http://localhost:4318/v1/logs
+      endpoint: ${MANAGEMENT_OTLP_LOGGING_ENDPOINT:http://localhost:4318/v1/logs}
 
 logging:
   pattern:

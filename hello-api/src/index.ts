@@ -10,7 +10,7 @@ const app = new Elysia()
 	.get('/', () => 'Hello Elysia')
 	.use(greetRoutes)
 	.use(chaosRoutes)
-	.listen(3001)
+	.listen({ hostname: '0.0.0.0', port: 3001 })
 
 console.log(
 	`🦊 Elysia is running at ${app.server?.hostname}:${app.server?.port}`

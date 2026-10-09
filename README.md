@@ -2,6 +2,30 @@
 
 Stack: `grafana/otel-lgtm` (Grafana + Tempo + Loki + Mimir + OTel Collector ใน container เดียว)
 
+รัน LGTM พร้อมทั้ง 2 แอปใน Docker:
+
+```bash
+docker compose up --build -d
+```
+
+- hello-api: http://localhost:3001
+- order-api: http://localhost:3002
+- Grafana: http://localhost:3000
+
+หากพอร์ตแอปชนกับโปรแกรมอื่น กำหนด `HELLO_API_PORT` และ `ORDER_API_PORT` ได้ เช่น `HELLO_API_PORT=13001 ORDER_API_PORT=13002 docker compose up --build -d`
+
+## โหมด log 2 แบบ
+
+| โหมด | คำสั่ง | log ไปถึง Loki ยังไง |
+|---|---|---|
+| push (default) | `docker compose up --build -d` | app export OTLP log เอง — ได้ severity/attributes/trace context ครบที่สุด |
+| stdout | `make up-stdout` | ปิด OTLP log export (`OTEL_LOGS_EXPORTER=none` / `MANAGEMENT_OTLP_LOGGING_EXPORT_ENABLED=false`) แล้ว promtail scrape จาก container stdout |
+
+- ทั้งสองโหมด traces/metrics ยัง push ผ่าน OTLP เหมือนเดิม เปลี่ยนแค่เส้นทาง log
+- โหมด stdout: hello-api แป๊ะ `trace_id`/`span_id` ลงใน JSON log line ด้วย จึงยัง correlate กับ trace ใน Tempo ได้
+- promtail ใช้ docker_sd กรองเฉพาะ container ที่ติด label `otel.logs.scrape=true` (ไม่เก็บ log ทั้งเครื่อง)
+- prod stack มี overlay เดียวกัน: `make prod-apps-stdout` (push mode คือ `make prod-apps`)
+
 - Grafana UI: http://localhost:3000
 - OTLP gRPC: `localhost:4317`
 - OTLP HTTP: `http://localhost:4318`

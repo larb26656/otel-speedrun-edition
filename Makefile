@@ -1,11 +1,12 @@
 .PHONY: up down logs open app dev stop-app traffic slow error chaos chaos-traffic traces loki metrics push-log \
-	order-build order-app stop-order order-traffic order-greet order-slow checkout checkout-traffic order-traces trace
+	order-build order-app stop-order order-traffic order-greet order-slow checkout checkout-traffic order-traces trace \
+	prod prod-apps prod-down prod-logs up-stdout prod-apps-stdout
 
 up:
 	docker compose up -d
 
 down:
-	docker compose down
+	docker compose -f docker-compose.yml -f docker-compose.stdout.yml down --remove-orphans
 
 logs:
 	docker compose logs -f lgtm
@@ -97,3 +98,25 @@ order-traces:
 
 trace:
 	@python3 dump-trace.py $(ID)
+
+# ---------- prod stack (docker-prod — split services + apps profile) ----------
+
+prod:
+	cd docker-prod && docker compose up -d
+
+prod-apps:
+	cd docker-prod && docker compose --profile apps up -d --build
+
+prod-down:
+	cd docker-prod && docker compose -f compose.yml -f compose.stdout.yml --profile apps down --remove-orphans
+
+prod-logs:
+	cd docker-prod && docker compose logs -f hello-api order-api
+
+# ---------- stdout log mode (promtail scrapes container stdout, OTLP log export off) ----------
+
+up-stdout:
+	docker compose -f docker-compose.yml -f docker-compose.stdout.yml up -d
+
+prod-apps-stdout:
+	cd docker-prod && docker compose -f compose.yml -f compose.stdout.yml --profile apps up -d --build
