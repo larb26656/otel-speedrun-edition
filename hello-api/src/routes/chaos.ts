@@ -1,6 +1,5 @@
 import { Elysia } from 'elysia'
 import { record } from '@elysia/opentelemetry'
-import { SeverityNumber } from '@opentelemetry/api-logs'
 import { logger } from '../logger'
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms))
@@ -39,11 +38,9 @@ export const chaosRoutes = new Elysia({ name: 'chaos-routes' })
 			const roll = Math.random()
 
 			if (roll < failRate) {
-				logger.emit({
-					severityText: 'ERROR',
-					severityNumber: SeverityNumber.ERROR,
-					body: `chaos: injecting failure (roll=${roll.toFixed(3)} < p=${failRate})`
-				})
+				logger.error(
+					`chaos: injecting failure (roll=${roll.toFixed(3)} < p=${failRate})`
+				)
 				return record('charge-payment', () => {
 					throw new Error('simulated failure: payment gateway timeout')
 				})

@@ -26,6 +26,19 @@ Stack: `grafana/otel-lgtm` (Grafana + Tempo + Loki + Mimir + OTel Collector ใ�
 | `make metrics` | query request rate ต่อ route จาก Mimir |
 | `make push-log` | ยิง test log เข้า Loki โดยตรง |
 
+### order-api (Spring Boot ที่ call ต่อ hello-api — ดู distributed tracing)
+
+| คำสั่ง | ทำอะไร |
+|---|---|
+| `make order-build` | build order-api jar |
+| `make order-app` | build + รัน order-api (:3002) |
+| `make stop-order` | หยุด order-api |
+| `make order-traffic` / `make order-greet NAME=x` / `make order-slow MS=500` | ยิง request เข้า order-api (บาง route จะไป call hello-api ต่อ) |
+| `make checkout` / `make checkout P=30 MAXMS=800` | checkout flow → call hello-api `/chaos` (สุ่ม fail ได้) |
+| `make checkout-traffic` / `make checkout-traffic N=50` | burst checkout สร้าง error spike ทั้ง 2 services |
+| `make order-traces` | query trace ล่าสุดของ order-api จาก Tempo |
+| `make trace ID=<trace_id>` | dump spans ใน trace นั้น (เห็น waterfall แบบ text) |
+
 ### ยิง test log เข้า Loki
 
 ```bash
@@ -67,6 +80,64 @@ histogram_quantile(0.99, sum by (http_route, le) (rate(http_server_request_durat
 ```
 
 > Mimir scrape ทุก ~60s — ยิง traffic แล้วรอสัก 1–2 นาทีค่อย query
+
+---
+
+## order-api — Distributed Tracing ข้าม 2 services (Spring Boot)
+
+`order-api/` — Spring Boot 3 (Java 21, port **3002**) ใช้ **observability stack ของ Spring ล้วน**:
+
+| Signal | อะไรทำงาน | ได้อะไร |
+|---|---|---|
+| Traces | `micrometer-tracing-bridge-otel` + `opentelemetry-exporter-otlp` | HTTP server/client spans + W3C propagation — ผ่าน Observation API ของ Micrometer |
+| Metrics | `spring-boot-starter-actuator` + `micrometer-registry-otlp` | `http.server.request.duration`, JVM/system metrics ฯลฯ export OTLP |
+| Logs | `opentelemetry-logback-appender-1.0` + Boot `OpenTelemetryLoggingAutoConfiguration` | log ทุก line แนบ trace_id/span_id ส่งเข้า Loki ผ่าน OTLP |
+
+> Micrometer = facade เดียวที่ให้ทั้ง metric + span จาก `Observation` เดียวกัน (เขียน code ทีเดียวได้ 2 signals) — config ทั้งหมดอยู่ที่ `management.otlp.*` ใน `application.yml`
+
+```
+client ──> order-api (:3002, Spring)  ──RestClient──> hello-api (:3001, Elysia)
+             POST /checkout                                GET /chaos   (สุ่ม fail)
+             GET /orders/{id}?ms=                          GET /slow    (หน่วง)
+             GET /greet/{name}                             GET /greet/{name}
+```
+
+Trace context (W3C `traceparent`) ถูกแพร่ผ่าน HTTP header อัตโนมัติ — trace เดียวเห็นครบทั้ง 2 services:
+
+```bash
+make order-app                                  # รัน order-api (ต้องรัน hello-api ก่อน)
+make checkout                                   # success path
+make checkout P=100                             # ให้ hello-api fail ทุกครั้ง (error propagation)
+make order-traces                               # เอา trace ID ล่าสุด
+make trace ID=<trace_id>                        # ดู spans ใน trace
+```
+
+ตัวอย่าง output ของ `make trace` ตอน payment fail — คนร้าย (`charge-payment`) โดนตั้ง ERROR พร้อม exception message:
+
+```
+order-api    | http get                     | ERROR | 500 Internal Server Error: "simulated failure: payment gateway timeout"
+order-api    | order.checkout               | ERROR | payment gateway failed with 500 INTERNAL_SERVER_ERROR
+order-api    | http post /checkout          | ok    |   ← 502 กลับ client
+hello-elysia | GET /chaos                   | ERROR |
+hello-elysia | charge-payment               | ERROR | simulated failure: payment gateway timeout
+```
+
+ของที่ควรลองดู:
+
+- **Trace waterfall ข้าม service**: ใน Grafana → Explore → Tempo เปิด trace ของ `POST /checkout` จะเห็น span ของทั้ง `order-api` และ `hello-elysia` ต่อกันในแถวเดียว
+- **Error propagation**: `make checkout P=100` แล้วดูว่า error status วิ่งกลับมาทั้ง chain
+- **Log correlation**: log ของ order-api มี `[order-api,<traceId>,<spanId>]` ต่อท้าย level (จาก MDC — Micrometer ใช้ key แบบ camelCase) — คลิกจาก span ใน Tempo หา log ของ request นั้นได้ทั้ง 2 services
+- **TraceQL หา cross-service**: `{ resource.service.name = "order-api" } && { name = "charge-payment" }`
+- **Observation API**: span มือ (`order.checkout` ฯลฯ) สร้างจาก `Observation.createNotStarted(...)` ใน `OrderService` — Micrometer สร้างทั้ง span และ timer metric (`order_checkout_milliseconds_*`) จากอันเดียวกัน
+
+ความต่างที่เจอตอนใช้ Spring-native (เทียบกับ OTel starter / ฝั่ง hello-api):
+
+- **ชื่อ span**: Micrometer ตั้งชื่อ lowercase (`http post /checkout`) ส่วน OTel/JS เป็น `POST /checkout`
+- **Span status ตอน 5xx ที่ handler จบเอง**: `http post /checkout` ตอบ 502 ผ่าน `@RestControllerAdvice` โดยไม่มี exception หลุดออกมา → root span ไม่ถูกตั้ง ERROR (มีแค่ tag `error`) — ต่างจาก OTel semconv ที่ map 5xx → ERROR เสมอ ใช้ TraceQL `{ status = error }` จะยังเจอ trace ผ่าน span ลูก (`order.checkout`, `charge-payment`) ที่ ERROR จริง
+- **ชื่อ metric**: server side ใช้ OTel convention เหมือนกัน (`http.server.request.duration` → `http_server_request_duration_seconds_*`) query RED เดิมใช้ได้เลย แต่ client side เป็น `http.client.requests` (milliseconds)
+- **Metrics เพิ่มมาฟรี**: `jvm_*`, `executor_*`, `disk_*`, `application_ready_time_*` จาก Micrometer binders ของ Actuator
+
+Metrics ที่ starter ส่งอัตโนมัติ (OTLP → Mimir): `http_server_request_duration_seconds_*` (แยกตาม `http_route`), JVM metrics (`jvm_memory_used_bytes` ฯลฯ) — ใช้ PromQL เดิมได้เลย
 
 
 

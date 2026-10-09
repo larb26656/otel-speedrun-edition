@@ -5,10 +5,13 @@ import {
 	ATTR_HTTP_ROUTE,
 	ATTR_URL_PATH
 } from '@opentelemetry/semantic-conventions'
-import { logger, severityFor } from '../logger'
+import { logger } from '../logger'
 import { requestTotal, errorTotal } from '../metrics'
 
 const requestStart = new WeakMap<Request, number>()
+
+const levelFor = (status: number): 'info' | 'warn' | 'error' =>
+	status >= 500 ? 'error' : status >= 400 ? 'warn' : 'info'
 
 export const httpLog = new Elysia({ name: 'http-log' })
 	.onRequest(function markRequestStart({ request }) {
@@ -18,7 +21,6 @@ export const httpLog = new Elysia({ name: 'http-log' })
 		{ as: 'global' },
 		function logHttpRequest({ request, path, route, set }) {
 			const status = typeof set.status === 'number' ? set.status : 200
-			const severity = severityFor(status)
 			const start = requestStart.get(request)
 			const metricAttributes = {
 				[ATTR_HTTP_REQUEST_METHOD]: request.method,
@@ -29,11 +31,8 @@ export const httpLog = new Elysia({ name: 'http-log' })
 			requestTotal.add(1, metricAttributes)
 			if (status >= 500) errorTotal.add(1, metricAttributes)
 
-			logger.emit({
-				severityText: severity.text,
-				severityNumber: severity.number,
-				body: `${request.method} ${path} ${status}`,
-				attributes: {
+			logger[levelFor(status)](
+				{
 					[ATTR_HTTP_REQUEST_METHOD]: request.method,
 					[ATTR_URL_PATH]: path,
 					[ATTR_HTTP_ROUTE]: route ?? path,
@@ -43,7 +42,8 @@ export const httpLog = new Elysia({ name: 'http-log' })
 							(performance.now() - start).toFixed(2)
 						)
 					})
-				}
-			})
+				},
+				`${request.method} ${path} ${status}`
+			)
 		}
 	)

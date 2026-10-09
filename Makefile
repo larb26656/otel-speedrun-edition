@@ -1,4 +1,5 @@
-.PHONY: up down logs open app dev stop-app traffic slow error chaos chaos-traffic traces loki metrics push-log
+.PHONY: up down logs open app dev stop-app traffic slow error chaos chaos-traffic traces loki metrics push-log \
+	order-build order-app stop-order order-traffic order-greet order-slow checkout checkout-traffic order-traces trace
 
 up:
 	docker compose up -d
@@ -57,3 +58,42 @@ metrics:
 
 push-log:
 	@MESSAGE="$(MSG)" LEVEL="$(LEVEL)" JOB="$(JOB)" ./push-test-log.sh
+
+# ---------- order-api (Spring Boot, :3002 — calls hello-api) ----------
+
+order-build:
+	cd order-api && mvn -q package -DskipTests
+
+order-app: order-build
+	java -jar order-api/target/order-api-0.0.1-SNAPSHOT.jar
+
+stop-order:
+	kill $$(lsof -ti :3002)
+
+order-traffic:
+	@curl -s localhost:3002/ && echo
+	@curl -s localhost:3002/greet/$(if $(NAME),$(NAME),luckytime) && echo
+	@curl -s 'localhost:3002/orders/42?ms=500' && echo
+	@curl -s -X POST 'localhost:3002/checkout?p=0&maxMs=300' && echo
+
+order-greet:
+	@curl -s localhost:3002/greet/$(if $(NAME),$(NAME),luckytime) && echo
+
+order-slow:
+	@curl -s 'localhost:3002/orders/42?ms=$(MS)' && echo
+
+checkout:
+	@curl -s -X POST 'localhost:3002/checkout?p=$(P)&maxMs=$(MAXMS)' && echo
+
+checkout-traffic:
+	@for i in $$(seq 1 $(N)); do curl -s -X POST 'localhost:3002/checkout?p=30&maxMs=800' > /dev/null; done
+	@echo "fired $(N) checkout requests (p=30 maxMs=800) — error spike จะเห็นทั้ง order-api และ hello-api"
+
+order-traces:
+	@curl -s -G http://localhost:3000/api/datasources/proxy/uid/tempo/api/search \
+		--data-urlencode 'q={ resource.service.name = "order-api" }' \
+		--data-urlencode 'limit=5' \
+	| python3 -c "import json,sys; [print(t['traceID'], t['rootServiceName'], t['rootTraceName']) for t in json.load(sys.stdin)['traces']]"
+
+trace:
+	@python3 dump-trace.py $(ID)
